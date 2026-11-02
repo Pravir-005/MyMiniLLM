@@ -1,4 +1,4 @@
-# minigpt
+# MiNigpt
 
 A small GPT-style language model built from scratch in PyTorch, trained character-by-character on TinyShakespeare. Built for fun and to understand how LLMs work, one piece at a time.
 

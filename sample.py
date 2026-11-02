@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 
 # Reuses the model definition and config from gpt.py (training only runs when gpt.py is executed directly)
-from gpt import CKPT_PATH, GPT, block_size, device, meta
+from GPT import CKPT_PATH, GPT, block_size, device, meta
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--prompt", type=str, default="\n", help="text to start from")

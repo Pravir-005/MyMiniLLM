@@ -11,16 +11,31 @@ from torch.nn import functional as F
 
 torch.manual_seed(1337)
 
-# ---------------- config (sized for a CPU; scale up on a GPU) ----------------
-batch_size = 32
-block_size = 128      # context length
-n_embd = 128          # embedding size
-n_head = 4            # attention heads (head size = 128 / 4 = 32)
-n_layer = 4           # transformer blocks
-dropout = 0.1
-max_iters = 3000
+# ---------------- config: choose a preset with MINIGPT_SIZE=small|medium ----------------
+PRESETS = {
+    # ~0.8M parameters: trains in about a minute on a GPU
+    "small": dict(batch_size=32, grad_accum=1, block_size=128, n_embd=128, n_head=4, n_layer=4,
+                  dropout=0.1, max_iters=3000, eval_iters=50),
+    # ~10.7M parameters: the Day 3 model.
+    # Effective batch = batch_size * grad_accum = 64, but only 16 sequences sit in GPU memory at once.
+    "medium": dict(batch_size=16, grad_accum=4, block_size=256, n_embd=384, n_head=6, n_layer=6,
+                   dropout=0.2, max_iters=5000, eval_iters=100),
+}
+SIZE = os.environ.get("MINIGPT_SIZE", "small")
+if SIZE not in PRESETS:
+    raise SystemExit(f"MINIGPT_SIZE must be one of {list(PRESETS)}, got '{SIZE}'")
+_cfg = PRESETS[SIZE]
+
+batch_size = _cfg["batch_size"]  # sequences per micro-batch (what must fit in GPU memory)
+grad_accum = _cfg["grad_accum"]  # micro-batches whose gradients are summed per optimizer step
+block_size = _cfg["block_size"]  # context length
+n_embd = _cfg["n_embd"]          # embedding size
+n_head = _cfg["n_head"]          # attention heads (head size = n_embd / n_head)
+n_layer = _cfg["n_layer"]        # transformer blocks
+dropout = _cfg["dropout"]
+max_iters = _cfg["max_iters"]
+eval_iters = _cfg["eval_iters"]
 eval_interval = 250
-eval_iters = 50
 max_lr = 1e-3
 min_lr = 1e-4
 warmup_iters = 100
@@ -28,7 +43,8 @@ grad_clip = 1.0
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CKPT_PATH = os.path.join(HERE, "ckpt.pt")
+CKPT_PATH = os.path.join(HERE, f"ckpt_{SIZE}.pt")  # one checkpoint per preset
+LOG_PATH = os.path.join(HERE, f"log_{SIZE}.csv")   # loss history for plotting
 
 # ---------------- data ----------------
 with open(os.path.join(HERE, "meta.pkl"), "rb") as f:
@@ -172,6 +188,11 @@ if __name__ == "__main__":
     print(f"device: {device} | parameters: {sum(p.numel() for p in model.parameters()):,}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=max_lr, weight_decay=0.1)
 
+    print(f"preset: {SIZE} | context {block_size} | {n_layer} layers x {n_head} heads | embd {n_embd} "
+          f"| dropout {dropout} | batch {batch_size} x {grad_accum} accum")
+    with open(LOG_PATH, "w") as f:
+        f.write("step,train,val\n")
+
     best_val = float("inf")
     t0 = time.time()
     for it in range(max_iters + 1):
@@ -183,14 +204,17 @@ if __name__ == "__main__":
             losses = estimate_loss(model)
             print(f"step {it:4d} | train {losses['train']:.4f} | val {losses['val']:.4f} "
                   f"| lr {lr:.5f} | {time.time() - t0:.0f}s elapsed")
+            with open(LOG_PATH, "a") as f:
+                f.write(f"{it},{losses['train']:.4f},{losses['val']:.4f}\n")
             if losses["val"] < best_val:
                 best_val = losses["val"]
                 torch.save({"model": model.state_dict()}, CKPT_PATH)
 
-        xb, yb = get_batch("train")
-        _, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        for _ in range(grad_accum):
+            xb, yb = get_batch("train")
+            _, loss = model(xb, yb)
+            (loss / grad_accum).backward()  # dividing makes the summed gradient an average
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 

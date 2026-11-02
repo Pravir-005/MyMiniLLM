@@ -42,7 +42,7 @@ pip install torch numpy
 
 python prepare.py          # downloads data, writes train.bin / val.bin / meta.pkl
 python bigram.py           # baseline, loss ~2.5
-python gpt.py              # trains the GPT, saves ckpt.pt
+python GPT.py              # trains the GPT, saves ckpt.pt
 python sample.py --prompt "ROMEO:" --temp 0.7 --top_k 20 --n 600
 ```
 

@@ -20,6 +20,9 @@ PRESETS = {
     # Effective batch = batch_size * grad_accum = 64, but only 16 sequences sit in GPU memory at once.
     "medium": dict(batch_size=16, grad_accum=4, block_size=256, n_embd=384, n_head=6, n_layer=6,
                    dropout=0.2, max_iters=5000, eval_iters=100),
+    # Same model, but more dropout and stop near the point where val loss bottomed out (~step 2000)
+    "medium_reg": dict(batch_size=16, grad_accum=4, block_size=256, n_embd=384, n_head=6, n_layer=6,
+                       dropout=0.3, max_iters=2500, eval_iters=100),
 }
 SIZE = os.environ.get("MINIGPT_SIZE", "small")
 if SIZE not in PRESETS:
@@ -42,14 +45,23 @@ warmup_iters = 100
 grad_clip = 1.0
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+# Tokenizer: MINIGPT_TOK=char (default, 65 tokens) or bpe (needs prepare_bpe.py first)
+TOK = os.environ.get("MINIGPT_TOK", "char")
+if TOK not in ("char", "bpe"):
+    raise SystemExit(f"MINIGPT_TOK must be 'char' or 'bpe', got '{TOK}'")
+SUFFIX = "" if TOK == "char" else "_bpe"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-CKPT_PATH = os.path.join(HERE, f"ckpt_{SIZE}.pt")  # one checkpoint per preset
-LOG_PATH = os.path.join(HERE, f"log_{SIZE}.csv")   # loss history for plotting
+CKPT_PATH = os.path.join(HERE, f"ckpt_{SIZE}{SUFFIX}.pt")  # one checkpoint per preset + tokenizer
+LOG_PATH = os.path.join(HERE, f"log_{SIZE}{SUFFIX}.csv")   # loss history for plotting
 
 # ---------------- data ----------------
-with open(os.path.join(HERE, "meta.pkl"), "rb") as f:
+with open(os.path.join(HERE, f"meta{SUFFIX}.pkl"), "rb") as f:
     meta = pickle.load(f)
 vocab_size, itos = meta["vocab_size"], meta["itos"]
+# Loss is measured per TOKEN, and BPE tokens cover several characters each. To compare fairly we
+# convert to bits per character: bpc = loss * (tokens / characters) / ln(2). Char-level: ratio = 1.
+val_tokens_per_char = meta.get("val_tokens_per_char", 1.0)
 
 
 def load(name):
@@ -57,7 +69,7 @@ def load(name):
     return torch.from_numpy(arr.astype(np.int64))
 
 
-train_data, val_data = load("train.bin"), load("val.bin")
+train_data, val_data = load(f"train{SUFFIX}.bin"), load(f"val{SUFFIX}.bin")
 
 
 def get_batch(split):
@@ -190,8 +202,9 @@ if __name__ == "__main__":
 
     print(f"preset: {SIZE} | context {block_size} | {n_layer} layers x {n_head} heads | embd {n_embd} "
           f"| dropout {dropout} | batch {batch_size} x {grad_accum} accum")
+    print(f"tokenizer: {TOK} | vocab size {vocab_size} | val tokens per character {val_tokens_per_char:.3f}")
     with open(LOG_PATH, "w") as f:
-        f.write("step,train,val\n")
+        f.write("step,train,val,val_bpc\n")
 
     best_val = float("inf")
     t0 = time.time()
@@ -202,10 +215,11 @@ if __name__ == "__main__":
 
         if it % eval_interval == 0:
             losses = estimate_loss(model)
+            val_bpc = losses["val"] * val_tokens_per_char / math.log(2)
             print(f"step {it:4d} | train {losses['train']:.4f} | val {losses['val']:.4f} "
-                  f"| lr {lr:.5f} | {time.time() - t0:.0f}s elapsed")
+                  f"| val bpc {val_bpc:.3f} | lr {lr:.5f} | {time.time() - t0:.0f}s elapsed")
             with open(LOG_PATH, "a") as f:
-                f.write(f"{it},{losses['train']:.4f},{losses['val']:.4f}\n")
+                f.write(f"{it},{losses['train']:.4f},{losses['val']:.4f},{val_bpc:.4f}\n")
             if losses["val"] < best_val:
                 best_val = losses["val"]
                 torch.save({"model": model.state_dict()}, CKPT_PATH)

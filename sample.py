@@ -3,6 +3,8 @@
 Examples:
     python3 sample.py
     python3 sample.py --prompt "ROMEO:" --temp 0.7 --top_k 20 --n 600
+    MINIGPT_SIZE=medium python3 sample.py          # a different preset
+    MINIGPT_TOK=bpe python3 sample.py              # a BPE-trained model
 """
 import argparse
 
@@ -10,7 +12,7 @@ import torch
 import torch.nn.functional as F
 
 # Reuses the model definition and config from gpt.py (training only runs when gpt.py is executed directly)
-from GPT import CKPT_PATH, GPT, block_size, device, meta
+from gpt import CKPT_PATH, GPT, TOK, block_size, device, meta
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--prompt", type=str, default="\n", help="text to start from")
@@ -23,7 +25,7 @@ args = parser.parse_args()
 if args.seed is not None:
     torch.manual_seed(args.seed)
 
-stoi, itos = meta["stoi"], meta["itos"]
+stoi, itos = meta["stoi"], meta["itos"]  # for BPE, stoi is still character -> id; itos is token -> text
 
 model = GPT().to(device)
 ckpt = torch.load(CKPT_PATH, map_location=device)
@@ -32,6 +34,10 @@ model.eval()
 
 # Encode the prompt, skipping any character the tokenizer has never seen
 ids = [stoi[c] for c in args.prompt if c in stoi] or [0]
+if TOK == "bpe":
+    from bpe import encode  # merge the prompt's characters into BPE tokens
+
+    ids = encode(ids, meta["merges"], meta["base_vocab"])
 idx = torch.tensor([ids], dtype=torch.long, device=device)
 
 with torch.no_grad():

@@ -1,4 +1,4 @@
-# minigpt
+# MyTinyLLM
 
 A small GPT-style language model built from scratch in PyTorch and trained on TinyShakespeare. I built it over four days to understand how LLMs work, from tokenizer to attention to training dynamics, and documented what the experiments showed.
 
